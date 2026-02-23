@@ -5,48 +5,39 @@ import datetime
 from pathlib import Path
 
 # --- 1. SET UP THE PAGE ---
-st.set_page_config(page_title="Agri-Price Predictor", layout="wide")
-st.title("Live Carrot Price Predictor in Sri Lanka")
+st.set_page_config(page_title="Agri-Price Predictor", layout="wide", initial_sidebar_state="expanded")
+
+# --- NEW: ABOUT THIS APPLICATION (SIDEBAR) ---
+st.sidebar.title("ℹ️ About this Application")
+st.sidebar.info(
+    "**Live Carrot Price Predictor**\n\n"
+    "This machine learning dashboard predicts the daily wholesale price of carrots across 25 districts in Sri Lanka. "
+    "It uses an **XGBoost Regressor** trained on 130,000 historical records from 2020 to 2025.\n\n"
+    "**Key Predictive Features:**\n"
+    "- 7-Day Historical Price Lag\n"
+    "- Weather anomalies (Rainfall, Temp, Humidity)\n"
+    "- Regional Market Differences\n\n"
+    "*Developed as a Machine Learning academic project focusing on local dataset compilation, advanced algorithm selection, and Explainable AI.*"
+)
+
+st.title("🥕 Live Carrot Price Predictor")
 st.write("Enter the local climate and historical market conditions below to predict today's wholesale carrot price.")
 
 # --- 2. LOAD THE MODEL & DATA STRUCTURE ---
 try:
     base_dir = Path(__file__).resolve().parents[1]
-    output_dir = base_dir / "output"
+    model_path = base_dir / 'output' / 'xgboost_carrot_model.pkl'
+    sample_path = base_dir / 'output' / 'prediction_results.csv'
 
-    # Load the trained model
-    model = joblib.load(output_dir / "xgboost_carrot_model.pkl")
+    model = joblib.load(model_path)
+    df_sample = pd.read_csv(sample_path)
     
-    # Load the saved test data just to get the exact column names the model expects
-    df_sample = pd.read_csv(output_dir / "prediction_results.csv")
-    
-    # Extract just the feature columns (ignore the target/prediction columns)
     expected_columns = [col for col in df_sample.columns if col not in ['Actual_Price', 'Predicted_Price']]
-    
-    # Extract the available regions from the column names (removing the "Region_" prefix)
     region_cols = [col for col in expected_columns if col.startswith('Region_')]
-    # We add 'Ampara' back in manually because it was our drop_first=True baseline!
     available_regions = ['Ampara'] + [col.replace('Region_', '') for col in region_cols]
-
-    def pick_expected_column(*candidates: str) -> str | None:
-        for candidate in candidates:
-            if candidate in expected_columns:
-                return candidate
-        return None
-
-    temp_col = pick_expected_column("Temperature_C", "Temperature (°C)", "Temperature (C)")
-    rain_col = pick_expected_column("Rainfall_mm", "Rainfall (mm)")
-    humidity_col = pick_expected_column("Humidity_pct", "Humidity (%)")
-    impact_col = pick_expected_column("Crop_Yield_Impact_Score")
-    price_7_col = pick_expected_column("Price_7_Days_Ago")
-    year_col = pick_expected_column("Year")
-    month_col = pick_expected_column("Month")
-    dow_col = pick_expected_column("Day_of_Week")
 
     # --- 3. BUILD THE USER INPUT FORM ---
     st.subheader("Market Inputs")
-    
-    # Create two columns to make the form look professional
     col1, col2 = st.columns(2)
     
     with col1:
@@ -60,74 +51,60 @@ try:
         humidity = st.number_input("Humidity (%)", value=75.0, step=1.0)
         impact_score = st.number_input("Crop Yield Impact Score (0.0 - 2.0)", value=1.50, step=0.1)
 
-    # --- 4. THE PREDICTION BUTTON ---
+    # --- 4. THE PREDICTION BUTTON & INPUT SUMMARY ---
     st.markdown("---")
     if st.button("🔮 Predict Carrot Price", type="primary"):
-        
-        # Create an empty dictionary with all expected features set to 0 initially
-        input_data = dict.fromkeys(expected_columns, 0)
-        
-        # Fill in the continuous numerical variables
-        missing_features: list[str] = []
 
-        if temp_col is not None:
-            input_data[temp_col] = temp
-        else:
-            missing_features.append("Temperature")
-
-        if rain_col is not None:
-            input_data[rain_col] = rainfall
-        else:
-            missing_features.append("Rainfall")
-
-        if humidity_col is not None:
-            input_data[humidity_col] = humidity
-        else:
-            missing_features.append("Humidity")
-
-        if impact_col is not None:
-            input_data[impact_col] = impact_score
-        else:
-            missing_features.append("Crop_Yield_Impact_Score")
-
-        if price_7_col is not None:
-            input_data[price_7_col] = price_7_days_ago
-        else:
-            missing_features.append("Price_7_Days_Ago")
-        
-        # Fill in the time variables extracted from the user's selected date
-        if year_col is not None:
-            input_data[year_col] = selected_date.year
-        if month_col is not None:
-            input_data[month_col] = selected_date.month
-        if dow_col is not None:
-            input_data[dow_col] = selected_date.weekday()
-
-        if missing_features:
-            st.warning(
-                "Some expected feature columns were not found in the trained data, so the prediction may fail or be less accurate.\n\n"
-                + "Missing: "
-                + ", ".join(missing_features)
+        def _set_first_existing(input_row: dict, candidates: list[str], value) -> None:
+            for candidate in candidates:
+                if candidate in input_row:
+                    input_row[candidate] = value
+                    return
+            raise KeyError(
+                f"None of the expected feature columns exist: {candidates}. "
+                "Re-train the model or update the app feature mapping."
             )
         
-        # Fill in the Region One-Hot Encoding
-        # If they selected 'Ampara', all region columns remain 0 (which is exactly what the model expects for the baseline).
+        # Format the data for the model
+        input_data = {col: 0 for col in expected_columns}
+
+        _set_first_existing(input_data, ["Temperature (°C)", "Temperature_C"], temp)
+        _set_first_existing(input_data, ["Rainfall_mm"], rainfall)
+        _set_first_existing(input_data, ["Humidity_pct"], humidity)
+        _set_first_existing(input_data, ["Crop_Yield_Impact_Score"], impact_score)
+        _set_first_existing(input_data, ["Price_7_Days_Ago"], price_7_days_ago)
+        _set_first_existing(input_data, ["Year"], selected_date.year)
+        _set_first_existing(input_data, ["Month"], selected_date.month)
+        _set_first_existing(input_data, ["Day_of_Week"], selected_date.weekday())
+        
         if selected_region != 'Ampara':
             region_col_name = f"Region_{selected_region}"
             if region_col_name in input_data:
-                input_data[region_col_name] = 1 # Set the specifically selected region to True (1)
+                input_data[region_col_name] = 1 
 
-        # Convert the dictionary into a Pandas DataFrame that the model can read
-        input_df = pd.DataFrame([input_data])
+        input_df = pd.DataFrame([input_data])[expected_columns]
         
-        # Make the live prediction!
+        # --- NEW: INPUT SUMMARY DISPLAY ---
+        st.subheader("📋 Input Summary")
+        sum_col1, sum_col2, sum_col3 = st.columns(3)
+        sum_col1.metric("Target Date", str(selected_date))
+        sum_col1.metric("Region", selected_region)
+        sum_col2.metric("Price 7 Days Ago", f"Rs. {price_7_days_ago:.2f}")
+        sum_col2.metric("Temperature", f"{temp} °C")
+        sum_col3.metric("Rainfall", f"{rainfall} mm")
+        sum_col3.metric("Humidity", f"{humidity} %")
+        
+        st.markdown("---")
+        
+        # Make the live prediction
         predicted_price = model.predict(input_df)[0]
         
-        # Display the result to the user
-        st.success(f"### Predicted Wholesale Price: Rs. {predicted_price:.2f} per kg")
+        # Display the final result
+        st.success(f"### 📈 Predicted Wholesale Price: Rs. {predicted_price:.2f} per kg")
 
-except FileNotFoundError:
+except FileNotFoundError as e:
     st.error(
-        "Error: Could not find the model or data in the 'output' folder. "
-        "Make sure you successfully ran TrainModel/trainmodel.py first!"
+        "Error: Could not find the model or data in the project 'output' folder. "
+        "Make sure you successfully ran TrainModel/trainmodel.py first.\n\n"
+        f"Details: {e}"
     )
